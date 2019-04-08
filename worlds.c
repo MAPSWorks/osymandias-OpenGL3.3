@@ -1,5 +1,3 @@
-#include <stdbool.h>
-#include <stdint.h>
 #include <math.h>
 
 #include "worlds.h"
@@ -26,8 +24,8 @@ static struct world_state state;
 void
 world_tile_to_latlon (float *lat, float *lon, const float x, const float y)
 {
-	*lat = atanf(sinhf((0.5f - y / state.size) * 2.0f * M_PI));
-	*lon = (x / state.size - 0.5f) * 2.0f * M_PI;
+	*lat = atanf(sinhf((float) M_PI * (1.0f - 2.0f * (y / state.size))));
+	*lon = (x / state.size - 0.5f) * 2.0f * (float) M_PI;
 }
 
 void
@@ -170,7 +168,7 @@ world_moveto_latlon (const float lat, const float lon)
 }
 
 void
-world_project_tile (union vec *vertex, union vec *normal, const float x, const float y)
+world_project_tile (union vec *vertex, const float x, const float y)
 {
 	float lat, lon;
 
@@ -178,14 +176,14 @@ world_project_tile (union vec *vertex, union vec *normal, const float x, const f
 	world_tile_to_latlon(&lat, &lon, x, y);
 
 	// Project:
-	worlds[current]->project(&state, vertex, normal, lat, lon);
+	worlds[current]->project(&state, vertex, lat, lon);
 }
 
 void
-world_project_latlon (union vec *vertex, union vec *normal, const float lat, const float lon)
+world_project_latlon (union vec *vertex, const float lat, const float lon)
 {
 	// Project:
-	worlds[current]->project(&state, vertex, normal, lat, lon);
+	worlds[current]->project(&state, vertex, lat, lon);
 }
 
 const struct coords *

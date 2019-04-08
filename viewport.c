@@ -1,19 +1,10 @@
-#include <stdbool.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <math.h>
-#include <vec/vec.h>
-
 #include <GL/gl.h>
 #include <GL/glu.h>
 
-#include "matrix.h"
 #include "worlds.h"
 #include "camera.h"
 #include "tilepicker.h"
 #include "layers.h"
-#include "inlinebin.h"
 #include "programs.h"
 #include "viewport.h"
 
@@ -60,7 +51,6 @@ viewport_destroy (void)
 	layers_destroy();
 	programs_destroy();
 	worlds_destroy();
-	tilepicker_destroy();
 }
 
 void
@@ -174,8 +164,8 @@ viewport_paint (void)
 {
 	// Clear the depth buffer:
 	glClear(GL_DEPTH_BUFFER_BIT);
-	glDisable(GL_DEPTH_TEST);
-	glDepthMask(GL_FALSE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
 
 	// Paint all layers:
 	layers_paint();

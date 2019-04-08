@@ -1,3 +1,5 @@
+#pragma once
+
 #include <vec/vec.h>
 
 // Mark a position in time:
@@ -24,7 +26,7 @@ struct world {
 	const float *(*matrix)		(void);
 	const float *(*matrix_inverse)	(void);
 	void (*move)			(const struct world_state *state);
-	void (*project)			(const struct world_state *state, union vec *vertex, union vec *normal, const float lat, const float lon);
+	void (*project)			(const struct world_state *state, union vec *vertex, const float lat, const float lon);
 	void (*zoom)			(const struct world_state *state);
 	void (*center_restrict_tile)	(struct world_state *state);
 	void (*center_restrict_latlon)	(struct world_state *state);

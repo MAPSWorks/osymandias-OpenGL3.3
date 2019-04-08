@@ -1,17 +1,5 @@
-#ifndef PNGLOADER_H
-#define PNGLOADER_H
+#pragma once
 
-struct pngloader
-{
-	pthread_t thread;
-	void (*on_completed)(struct pngloader *, void *);
+#include "cache.h"
 
-	struct quadtree_req req;
-};
-
-void pngloader_on_init (void);
-void pngloader_main (void *data);
-void pngloader_on_cancel (void);
-void pngloader_on_exit (void);
-
-#endif /* PNGLOADER_H */
+extern void *pngloader_main (const struct cache_node *req);

@@ -4,131 +4,78 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <png.h>
 
-#include "quadtree.h"
 #include "diskcache.h"
 #include "png.h"
 #include "pngloader.h"
 
-#define HEAP_SIZE	100000
 #define TILESIZE	256	// rgb pixels per side
 
-#ifndef __BIGGEST_ALIGNMENT__	// FIXME: hack to compile with clang
-#define __BIGGEST_ALIGNMENT__	16
-#endif
-
-// Structure for memory read I/O:
-struct io {
-	size_t      len;
-	const char *buf;
-	const char *cur;
-};
-
-static __thread char *heap = NULL;
-static __thread char *heap_head = NULL;
-static __thread bool initialized = false;
-static __thread volatile bool cancel_flag = false;
-
-static bool
-load_png_file (int fd, unsigned int *height, unsigned int *width, char **rawbits)
+// Return the contents of a file.
+static void *
+read_file (const int fd, size_t *len)
 {
-	bool ret = false;
-	char *data;
+	char *buf = NULL;
 	struct stat stat;
-	size_t len;
 	ssize_t nread;
 
 	// Get file size:
 	if (fstat(fd, &stat))
-		return false;
+		return NULL;
 
 	// Allocate buffer:
-	if ((data = malloc(len = stat.st_size)) == NULL)
-		return false;
+	if ((buf = malloc(*len = stat.st_size)) == NULL)
+		return NULL;
 
-	// Read in entire file, check carefully for cancellation:
-	for (size_t total = 0; total < len; total += nread) {
-		nread = read(fd, data + total, len - total);
-		if (cancel_flag || nread <= 0) {
-			free(data);
-			return false;
+	// Read in entire file:
+	for (size_t total = 0; total < *len; total += (size_t) nread) {
+		nread = read(fd, buf + total, *len - total);
+		if (nread <= 0) {
+			free(buf);
+			return NULL;
 		}
 	}
 
-	// Pass to png loader:
-	ret = png_load(data, len, height, width, rawbits);
-
-	// Clean up buffer:
-	free(data);
-	return ret;
+	return buf;
 }
 
-void
-pngloader_main (void *data)
+// Return raw PNG data for the request.
+static void *
+read_pngdata (const struct cache_node *req, size_t *len)
 {
-	int fd = -1;
-	struct pngloader *p = data;
-	unsigned int width;
-	unsigned int height;
-	char *rawbits = NULL;
+	int fd;
+	char *buf = NULL;
 
-	if (!initialized) {
-		free(p);
-		return;
-	}
-	// Reset heap pointer:
-	heap_head = heap;
-
-	cancel_flag = false;
-
-	// Get a file descriptor to the file. We just want a file descriptor to
-	// associate with this thread so that we know what to clean up, and not
-	// wait for the disk to actually deliver, so we issue a nonblocking call:
-	if ((fd = diskcache_open(p->req.zoom, p->req.x, p->req.y)) < 0 || cancel_flag)
-		goto exit;
+	if ((fd = diskcache_open(req->zoom, req->x, req->y)) < 0)
+		return NULL;
 
 	// Now that we have the fd, make it properly blocking:
-	if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK) < 0 || cancel_flag)
-		goto exit;
+	if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK) == 0)
+		buf = read_file(fd, len);
 
-	if (!load_png_file(fd, &height, &width, &rawbits) || cancel_flag)
-		goto exit;
+	close(fd);
+	return buf;
+}
 
-	if (fd >= 0) {
-		close(fd);
-		fd = -1;
+void *
+pngloader_main (const struct cache_node *req)
+{
+	unsigned int height, width;
+	char *pngdata, *rawbits;
+	size_t len;
+
+	if ((pngdata = read_pngdata(req, &len)) == NULL)
+		return NULL;
+
+	if (png_load(pngdata, len, &height, &width, &rawbits) == false) {
+		free(pngdata);
+		return NULL;
 	}
-	if (height != TILESIZE || width != TILESIZE) {
-		free(rawbits);
-		rawbits = NULL;
-		goto exit;
-	}
-	// Got tile, run callback:
-	p->on_completed(p, rawbits);
 
-exit:	if (fd >= 0)
-		close(fd);
+	free(pngdata);
+	if (height == TILESIZE && width == TILESIZE)
+		return rawbits;
 
-	free(p);
-}
-
-void
-pngloader_on_cancel (void)
-{
-	cancel_flag = true;
-}
-
-void
-pngloader_on_init (void)
-{
-	// Allocate a block of heap memory:
-	if ((heap = heap_head = malloc(HEAP_SIZE)) != NULL)
-		initialized = true;
-}
-
-void
-pngloader_on_exit (void)
-{
-	free(heap);
+	free(rawbits);
+	return NULL;
 }

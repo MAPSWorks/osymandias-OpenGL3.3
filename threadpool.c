@@ -1,402 +1,205 @@
-#include <stdbool.h>
-#include <limits.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 #include <pthread.h>
-#include <signal.h>
 
-enum job_slot_status {
-	SLOT_FREE,
-	SLOT_WAIT,
-	SLOT_BUSY
-};
-
-struct job {
-	int id;
-	enum job_slot_status status;
-	void *data;
-	struct thread *thread;
-};
-
-struct thread {
-	pthread_t id;
-	struct threadpool *pool;
-};
+#include "threadpool.h"
+#include "util.h"
 
 struct threadpool {
-	size_t nthreads;
-	struct job *jobs;
-	struct thread **threads;
+	void                     *jobs;
+	pthread_t                *threads;
+	struct threadpool_config  config;
 
-	// User-provided routines:
-	void (*on_init)(void);
-	void (*on_dequeue)(void *data);
-	void (*routine)(void *data);
-	void (*on_cancel)(void);
-	void (*on_exit)(void);
-
-	int job_counter;
-	size_t free_counter;
-	bool shutdown;
-	pthread_cond_t cond;
+	pthread_cond_t  cond;
 	pthread_mutex_t cond_mutex;
+
+	struct {
+		size_t jobs;
+		size_t threads;
+	} num;
+
+	bool shutdown;
 };
 
-// Each thread must know in which pool it's running when the
-// cancel_signal_handler is called:
-static __thread struct threadpool *parent_threadpool = NULL;
-
-static struct job *
-job_first_free (const struct threadpool *const p)
-{
-	// Quick check: no jobs free?
-	if (p->free_counter == 0) {
-		return NULL;
-	}
-	// Find next free slot in jobs table:
-	for (struct job *j = p->jobs; j < p->jobs + p->nthreads; j++) {
-		if (j->status == SLOT_FREE) {
-			return j;
-		}
-	}
-	return NULL;
-}
-
-static struct job *
-job_first_waiting (const struct threadpool *const p)
-{
-	// Quick check: if all slots are free, there are no waiting jobs:
-	if (p->free_counter == p->nthreads) {
-		return NULL;
-	}
-	// Find first eligible job in jobs table:
-	for (struct job *j = p->jobs; j < p->jobs + p->nthreads; j++) {
-		if (j->status == SLOT_WAIT) {
-			return j;
-		}
-	}
-	return NULL;
-}
-
-static struct job *
-job_by_id (const struct threadpool *const p, int job_id)
-{
-	// Quick check: if all slots are free, the job does not exist:
-	if (p->free_counter == p->nthreads) {
-		return NULL;
-	}
-	for (struct job *j = p->jobs; j < p->jobs + p->nthreads; j++) {
-		if (j->id == job_id && j->status != SLOT_FREE) {
-			return j;
-		}
-	}
-	return NULL;
-}
-
-static inline void
-slot_set_wait (struct threadpool *const p, struct job *const j)
-{
-	j->status = SLOT_WAIT;
-	p->free_counter--;
-}
-
-static inline void
-slot_set_free (struct threadpool *const p, struct job *const j)
-{
-	j->status = SLOT_FREE;
-	p->free_counter++;
-}
-
+// Check a pthread function for errors, print error message.
 static void
-cancel_signal_handler ()
+check (const int ret)
 {
-	// This interrupt handler is called inside the thread when a job is
-	// canceled. It's the caller's responsibility to provide a routine that
-	// cancels the work done in the main thread. For instance by setting a
-	// flag or self-piping to a select() statement. Remember that this
-	// routine is always run while the condition mutex is locked by
-	// job_cancel(), so keep things quick and simple.
+	if (ret != 0)
+		fprintf(stderr, "pthread: %s\n", strerror(ret));
+}
 
-	if (parent_threadpool && parent_threadpool->on_cancel) {
-		parent_threadpool->on_cancel();
-	}
+// Check a pthread function for errors, return error status.
+static bool
+failed (const int ret)
+{
+	check(ret);
+	return ret != 0;
+}
+
+// Get pointer to job slot #n.
+static inline void *
+jobslot (struct threadpool *p, const size_t n)
+{
+	return (char *) p->jobs + n * p->config.jobsize;
+}
+
+// Insert a job into the job queue. Needs mutex!
+static bool
+job_insert (struct threadpool *p, void *job)
+{
+	// Fail if the job queue is at capacity:
+	if (p->num.jobs == p->config.num.jobs)
+		return false;
+
+	memcpy(jobslot(p, p->num.jobs++), job, p->config.jobsize);
+	return true;
+}
+
+// Extract the first job from the job queue. Needs mutex!
+static bool
+job_take (struct threadpool *p, void *result)
+{
+	// Fail if there are no pending jobs:
+	if (p->num.jobs == 0)
+		return false;
+
+	// Return first job in queue:
+	memcpy(result, jobslot(p, 0), p->config.jobsize);
+
+	// Copy last job to first slot:
+	if (--p->num.jobs)
+		memcpy(jobslot(p, 0), jobslot(p, p->num.jobs), p->config.jobsize);
+
+	return true;
 }
 
 static void *
-thread_main (void *const data)
+thread_main (void *data)
 {
-	struct thread *const t = (struct thread *const)data;
-	struct job *job;
+	void *job;
+	struct threadpool *p = data;
 
-	// Save the information about which pool this thread belongs to,
-	// to a thread-local variable; we need this information in the
-	// thread_cancel signal handler:
-	parent_threadpool = t->pool;
+	if ((job = malloc(p->config.jobsize)) == NULL)
+		return NULL;
 
-	// Setup the SIGUSR1 handler for this thread:
-	sigset_t sigmask;
+	while (p->shutdown == false) {
 
-	if (sigemptyset(&sigmask) != 0) {
-		return NULL;
-	}
-	if (sigaddset(&sigmask, SIGUSR1) != 0) {
-		return NULL;
-	}
-	if (pthread_sigmask(SIG_UNBLOCK, &sigmask, (sigset_t *)NULL) != 0) {
-		return NULL;
-	}
-	struct sigaction action = {
-		.sa_flags = 0,
-		.sa_handler = cancel_signal_handler
-	};
-	// According to the manpage, the only failure conditions are an invalid
-	// action or an invalid signal specifier, both of which we control and
-	// can guarantee to not occur. Never say never though:
-	if (sigaction(SIGUSR1, &action, (struct sigaction *)NULL) != 0) {
-		return NULL;
-	}
-	// Run custom init function:
-	if (t->pool->on_init) {
-		t->pool->on_init();
-	}
-	// The pthread_cond_wait() must run under a locked mutex
-	// (it does its own internal unlocking/relocking):
-	if (pthread_mutex_lock(&t->pool->cond_mutex) != 0) {
-		return NULL;
-	}
-	for (;;)
-	{
-		// Wait for predicate to change, allow spurious wakeups:
-		while ((job = job_first_waiting(t->pool)) == NULL && !t->pool->shutdown) {
-			pthread_cond_wait(&t->pool->cond, &t->pool->cond_mutex);
-		}
-		if (t->pool->shutdown) {
+		// The pthread_cond_wait() must run under a locked mutex
+		// (it does its own internal unlocking/relocking):
+		if (failed(pthread_mutex_lock(&p->cond_mutex)))
 			break;
-		}
-		// We hold the condition mutex now;
-		// take over the task, remove it from the pool:
-		job->status = SLOT_BUSY;
-		job->thread = t;
 
-		// From here on we're autonomous:
-		pthread_mutex_unlock(&t->pool->cond_mutex);
+		// Wait for predicate to change, allow spurious wakeups:
+		while (!(job_take(p, job) || p->shutdown))
+			check(pthread_cond_wait(&p->cond, &p->cond_mutex));
+
+		// Unlock the condition mutex to release the job structure:
+		check(pthread_mutex_unlock(&p->cond_mutex));
 
 		// Run user-provided routine on data:
-		t->pool->routine(job->data);
-
-		// When done, mark the job slot as FREE again:
-		pthread_mutex_lock(&t->pool->cond_mutex);
-		slot_set_free(t->pool, job);
+		if (p->shutdown == false)
+			p->config.process(job);
 	}
-	pthread_mutex_unlock(&t->pool->cond_mutex);
 
-	// Run custom exit function:
-	if (t->pool->on_exit) {
-		t->pool->on_exit();
-	}
+	free(job);
 	return NULL;
 }
 
-static struct thread *
-thread_create (struct threadpool *const p)
-{
-	struct thread *t;
-
-	if ((t = malloc(sizeof(*t))) == NULL) {
-		return NULL;
-	}
-	t->pool = p;
-	if (pthread_create(&t->id, NULL, thread_main, t)) {
-		free(t);
-		return NULL;
-	}
-	return t;
-}
-
 static void
-thread_destroy (struct thread **const t)
+threads_destroy (struct threadpool *p)
 {
-	if (t == NULL || *t == NULL) {
-		return;
-	}
-	// Join with thread:
-	pthread_join((*t)->id, NULL);
-
-	free(*t);
-	*t = NULL;
+	p->shutdown = true;
+	check(pthread_cond_broadcast(&p->cond));
+	FOREACH_NELEM (p->threads, p->num.threads, t)
+		check(pthread_join(*t, NULL));
 }
 
-struct threadpool *
-threadpool_create (size_t nthreads,
-	void (*on_init)(void),
-	void (*on_dequeue)(void *data),
-	void (*routine)(void *data),
-	void (*on_cancel)(void),
-	void (*on_exit)(void))
+static bool
+threads_create (struct threadpool *p)
 {
-	struct thread *t;
-	struct threadpool *const p = malloc(sizeof(*p));
-
-	if (p == NULL) {
-		goto err_0;
-	}
-	if ((p->jobs = malloc(sizeof(struct job) * nthreads)) == NULL) {
-		goto err_1;
-	}
-	if ((p->threads = malloc(sizeof(struct thread *) * nthreads)) == NULL) {
-		goto err_2;
-	}
-	p->nthreads = nthreads;
-	p->on_init = on_init;
-	p->on_dequeue = on_dequeue;
-	p->routine = routine;
-	p->on_cancel = on_cancel;
-	p->on_exit = on_exit;
-	p->shutdown = false;
-	p->free_counter = nthreads;
-	p->job_counter = 1;
-
-	if (pthread_mutex_init(&p->cond_mutex, NULL)) {
-		goto err_3;
-	}
-	if (pthread_cond_init(&p->cond, NULL)) {
-		goto err_4;
-	}
-	// Initialize job queue to empty state:
-	for (struct job *q = p->jobs; q < p->jobs + p->nthreads; q++) {
-		q->id = 0;
-		q->data = NULL;
-		q->status = SLOT_FREE;
-		q->thread = NULL;
-	}
-	// Create individual threads; they start running immediately:
-	for (struct thread **q = p->threads; q < p->threads + p->nthreads; q++) {
-		if ((t = thread_create(p)) != NULL) {
-			*q = t;
-			continue;
+	FOREACH_NELEM (p->threads, p->config.num.threads, t) {
+		if (failed(pthread_create(t, NULL, thread_main, p))) {
+			threads_destroy(p);
+			return false;
 		}
-		// Error. Backtrack, destroy previously created threads:
-		for (struct thread **s = q - 1; s >= p->threads; s--) {
-			thread_destroy(s);
-		}
-		goto err_5;
+		p->num.threads++;
 	}
-	return p;
 
-err_5:	pthread_cond_destroy(&p->cond);
-err_4:	pthread_mutex_destroy(&p->cond_mutex);
-err_3:	free(p->threads);
-err_2:	free(p->jobs);
-err_1:	free(p);
-err_0:	return NULL;
-}
-
-void
-threadpool_destroy (struct threadpool **const p)
-{
-	if (p == NULL || *p == NULL) {
-		return;
-	}
-	// To be nice, broadcast shutdown message to all waiting threads:
-	pthread_mutex_lock(&(*p)->cond_mutex);
-	(*p)->shutdown = true;
-	pthread_cond_broadcast(&(*p)->cond);
-
-	// This should have taken care of the threads that were waiting in
-	// pthread_cond_wait(). Now, while still holding the mutex, ask the
-	// BUSY threads to cancel:
-	for (struct job *j = (*p)->jobs; j < (*p)->jobs + (*p)->nthreads; j++) {
-		if (j->status == SLOT_WAIT) {
-			void *const data = j->data;
-			slot_set_free(*p, j);
-			if ((*p)->on_dequeue) {
-				(*p)->on_dequeue(data);
-			}
-			continue;
-		}
-		if (j->status == SLOT_BUSY) {
-			pthread_kill(j->thread->id, SIGUSR1);
-		}
-	}
-	pthread_mutex_unlock(&(*p)->cond_mutex);
-
-	// Join and destroy all individual threads:
-	for (struct thread **t = (*p)->threads; t < (*p)->threads + (*p)->nthreads; t++) {
-		thread_destroy(t);
-	}
-	pthread_mutex_destroy(&(*p)->cond_mutex);
-	pthread_cond_destroy(&(*p)->cond);
-	free((*p)->threads);
-	free((*p)->jobs);
-	free(*p);
-	*p = NULL;
-}
-
-int
-threadpool_job_enqueue (struct threadpool *const p, void *const data)
-{
-	struct job *j;
-
-	if (p == NULL) {
-		return 0;
-	}
-	// Going to read/alter the predicate; must lock:
-	if (pthread_mutex_lock(&p->cond_mutex) != 0) {
-		return 0;
-	}
-	if ((j = job_first_free(p)) == NULL) {
-		pthread_mutex_unlock(&p->cond_mutex);
-		return 0;
-	}
-	// Fill slot with job:
-	j->data = data;
-	slot_set_wait(p, j);
-	int job_id = j->id = p->job_counter;
-
-	// Increment job counter, check for overflow, guarantee always > 0:
-	p->job_counter = (p->job_counter == INT_MAX) ? 1 : p->job_counter + 1;
-
-	// Notify a waiting thread about the new task;
-	// according to the manpage, it's legal and preferred to do this while
-	// holding the mutex:
-	pthread_cond_signal(&p->cond);
-
-	pthread_mutex_unlock(&p->cond_mutex);
-	return job_id;
+	return true;
 }
 
 bool
-threadpool_job_cancel (struct threadpool *const p, int job_id)
+threadpool_job_enqueue (struct threadpool *p, void *job)
 {
-	struct job *j;
+	bool ret;
 
-	if (p == NULL) {
+	if (p == NULL)
 		return false;
-	}
-	if (pthread_mutex_lock(&p->cond_mutex) != 0) {
-		return false;
-	}
-	// Job not found or slot is FREE? Nothing to cancel:
-	if ((j = job_by_id(p, job_id)) == NULL) {
-		pthread_mutex_unlock(&p->cond_mutex);
-		return true;
-	}
-	// If still in WAIT state, we can just dequeue the job:
-	if (j->status == SLOT_WAIT) {
-		void *const data = j->data;
-		slot_set_free(p, j);
-		pthread_mutex_unlock(&p->cond_mutex);
 
-		// Call user-defined on_dequeue function so that the user can
-		// reap this unprocessed data pointer:
-		if (p->on_dequeue) {
-			p->on_dequeue(data);
-		}
-		return true;
-	}
-	// Send a signal to the thread to trigger the on_cancel routine:
-	if (pthread_kill(j->thread->id, SIGUSR1) != 0) {
-		pthread_mutex_unlock(&p->cond_mutex);
+	if (failed(pthread_mutex_lock(&p->cond_mutex)))
 		return false;
-	}
-	return (pthread_mutex_unlock(&p->cond_mutex) == 0);
+
+	if ((ret = job_insert(p, job)))
+		check(pthread_cond_signal(&p->cond));
+
+	check(pthread_mutex_unlock(&p->cond_mutex));
+	return ret;
+}
+
+struct threadpool *
+threadpool_create (const struct threadpool_config *config)
+{
+	struct threadpool *p;
+
+	if (config == NULL || config->num.threads == 0 || config->num.jobs == 0)
+		goto err0;
+
+	if ((p = calloc(1, sizeof (*p))) == NULL)
+		goto err0;
+
+	p->config   = *config;
+	p->shutdown = false;
+	p->num.jobs = 0;
+
+	if ((p->jobs = calloc(config->num.jobs, config->jobsize)) == NULL)
+		goto err1;
+
+	if ((p->threads = calloc(config->num.threads, sizeof (pthread_t))) == NULL)
+		goto err2;
+
+	if (failed(pthread_mutex_init(&p->cond_mutex, NULL)))
+		goto err3;
+
+	if (failed(pthread_cond_init(&p->cond, NULL)))
+		goto err4;
+
+	if (threads_create(p) == false)
+		goto err5;
+
+	return p;
+
+err5:	check(pthread_cond_destroy(&p->cond));
+err4:	check(pthread_mutex_destroy(&p->cond_mutex));
+err3:	free(p->threads);
+err2:	free(p->jobs);
+err1:	free(p);
+err0:	return NULL;
+}
+
+void
+threadpool_destroy (struct threadpool *p)
+{
+	if (p == NULL)
+		return;
+
+	threads_destroy(p);
+
+	check(pthread_mutex_destroy(&p->cond_mutex));
+	check(pthread_cond_destroy(&p->cond));
+
+	free(p->threads);
+	free(p->jobs);
+	free(p);
 }

@@ -1,21 +1,14 @@
-#include <vec/vec.h>
+#pragma once
 
-// This structure contains a tile picked for display by the tilepicker:
+#include <stdbool.h>
+#include <stdint.h>
+
 struct tilepicker {
-	union vec coords[4];
-	union vec normal[4];
-	struct {
-		float x;
-		float y;
-	} pos;
-	struct {
-		float wd;
-		float ht;
-	} size;
-	unsigned int zoom;
-};
+	uint32_t x;
+	uint32_t y;
+	uint32_t zoom;
+} __attribute__((packed));
 
-void tilepicker_recalc (void);
-bool tilepicker_first (struct tilepicker *tile);
-bool tilepicker_next (struct tilepicker *tile);
-void tilepicker_destroy (void);
+extern void tilepicker_recalc (void);
+extern const struct tilepicker *tilepicker_first (void);
+extern const struct tilepicker *tilepicker_next  (void);

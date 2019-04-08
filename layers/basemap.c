@@ -16,9 +16,7 @@
 #include "../png.h"
 #include "../programs.h"
 #include "../programs/basemap_spherical.h"
-#include "../quadtree.h"
-
-#define MEMBERS(x)	(sizeof(x) / sizeof((x)[0]))
+#include "../util.h"
 
 static struct {
 	float scale[16];
@@ -132,10 +130,6 @@ paint_spherical (void)
 		.mat_model_inv = world_get_matrix_inverse(),
 	}));
 
-	// Activate map texture:
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, tex.id);
-
 	// Draw all triangles in the buffer:
 	glBindVertexArray(*vao_spherical);
 	glutil_draw_quad();
@@ -197,8 +191,8 @@ init (void)
 		return false;
 
 	// Generate vertex buffer and array objects:
-	glGenBuffers(MEMBERS(vbo), vbo);
-	glGenVertexArrays(MEMBERS(vao), vao);
+	glGenBuffers(NELEM(vbo), vbo);
+	glGenVertexArrays(NELEM(vao), vao);
 
 	init_planar();
 	init_spherical();
@@ -215,12 +209,12 @@ destroy (void)
 	glDeleteTextures(1, &tex.id);
 
 	// Delete vertex array and buffer objects:
-	glDeleteVertexArrays(MEMBERS(vao), vao);
-	glDeleteBuffers(MEMBERS(vbo), vbo);
+	glDeleteVertexArrays(NELEM(vao), vao);
+	glDeleteBuffers(NELEM(vbo), vbo);
 }
 
 // Export public methods:
-const struct layer layer_basemap = {
+LAYER(30) = {
 	.init    = &init,
 	.paint   = &paint,
 	.zoom    = &zoom,

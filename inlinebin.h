@@ -1,7 +1,8 @@
-#ifndef INLINEBIN_H
-#define INLINEBIN_H
+#pragma once
 
-enum inlinebin {
+#include <stddef.h>
+
+enum Inlinebin {
 	INLINEBIN_NONE,
 	SHADER_BASEMAP_SPHERICAL_VERTEX,
 	SHADER_BASEMAP_SPHERICAL_FRAGMENT,
@@ -9,16 +10,20 @@ enum inlinebin {
 	SHADER_BKGD_FRAGMENT,
 	SHADER_FRUSTUM_VERTEX,
 	SHADER_FRUSTUM_FRAGMENT,
+	SHADER_PLANAR_VERTEX,
+	SHADER_PLANAR_FRAGMENT,
 	SHADER_SOLID_VERTEX,
 	SHADER_SOLID_FRAGMENT,
+	SHADER_SPHERICAL_VERTEX,
+	SHADER_SPHERICAL_FRAGMENT,
 	SHADER_TILE2D_VERTEX,
 	SHADER_TILE2D_FRAGMENT,
+	SHADER_TILEPICKER_VERTEX,
+	SHADER_TILEPICKER_FRAGMENT,
 	TEXTURE_BACKGROUND,
 	TEXTURE_BASEMAP,
 	TEXTURE_COPYRIGHT,
 	TEXTURE_CURSOR,
 };
 
-void inlinebin_get (enum inlinebin member, const char **buf, size_t *len);
-
-#endif	/* INLINEBIN_H */
+extern void inlinebin_get (enum Inlinebin member, const char **buf, size_t *len);

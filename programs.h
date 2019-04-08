@@ -1,8 +1,13 @@
-#ifndef PROGRAMS_H
-#define PROGRAMS_H
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <GL/gl.h>
+
+#include "inlinebin.h"
 
 struct shader {
-	enum inlinebin	 src;
+	enum Inlinebin	 src;
 	const char	*buf;
 	size_t		 len;
 	GLuint		 id;
@@ -28,8 +33,6 @@ struct program {
 	bool		 created;
 };
 
-bool programs_init (void);
-void programs_destroy (void);
-void program_none (void);
-
-#endif	/* PROGRAMS_H */
+extern bool programs_init    (void);
+extern void programs_destroy (void);
+extern void program_none     (void);
