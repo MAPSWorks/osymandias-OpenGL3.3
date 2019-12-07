@@ -3,10 +3,10 @@
 
 #include "gui.h"
 #include "util.h"
-#include "worlds.h"
 #include "gui/framerate.h"
 #include "gui/local.h"
 #include "gui/signal.h"
+#include "layers/overview.h"
 
 static void
 on_key_press (GtkWidget *widget, GdkEventKey *event)
@@ -15,20 +15,14 @@ on_key_press (GtkWidget *widget, GdkEventKey *event)
 
 	switch (event->keyval)
 	{
-	case GDK_KEY_p:
-	case GDK_KEY_P:
-		world_set(WORLD_PLANAR);
-		framerate_repaint();
-		break;
-
 	case GDK_KEY_q:
 	case GDK_KEY_Q:
 		gtk_main_quit();
 		break;
 
-	case GDK_KEY_s:
-	case GDK_KEY_S:
-		world_set(WORLD_SPHERICAL);
+	case GDK_KEY_o:
+	case GDK_KEY_O:
+		layer_overview_toggle_visible();
 		framerate_repaint();
 		break;
 	}

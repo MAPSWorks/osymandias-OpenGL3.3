@@ -8,7 +8,6 @@
 #include "../layers.h"
 #include "../programs.h"
 #include "../programs/tile2d.h"
-#include "../viewport.h"
 #include "../png.h"
 
 // Array of counterclockwise vertices:
@@ -21,7 +20,8 @@ static struct glutil_vertex_uv vertex[4] = GLUTIL_VERTEX_UV_DEFAULT;
 
 // Projection matrix:
 static struct {
-	float proj[16];
+	float  proj32[16];
+	double proj64[16];
 } matrix;
 
 // Screen size:
@@ -39,17 +39,21 @@ static struct glutil_texture tex = {
 static GLuint vao, vbo;
 
 static void
-paint (void)
+paint (const struct camera *cam, const struct viewport *vp)
 {
+	(void) cam;
+	(void) vp;
+
 	// Viewport is screen:
 	glViewport(0, 0, screen.width, screen.height);
 
+	glDisable(GL_DEPTH_TEST);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	// Use the cursor program:
 	program_tile2d_use(&((struct program_tile2d) {
-		.mat_proj = matrix.proj,
+		.mat_proj = matrix.proj32,
 	}));
 
 	// Activate cursor texture:
@@ -64,13 +68,14 @@ paint (void)
 }
 
 static void
-resize (const unsigned int width, const unsigned int height)
+resize (const struct viewport *vp)
 {
-	screen.width  = width;
-	screen.height = height;
+	screen.width  = vp->width;
+	screen.height = vp->height;
 
 	// Projection matrix maps 1:1 to screen:
-	mat_scale(matrix.proj, 2.0f / screen.width, 2.0f / screen.height, 0.0f);
+	mat_scale(matrix.proj64, 2.0 / screen.width, 2.0 / screen.height, 0.0);
+	mat_to_float(matrix.proj32, matrix.proj64);
 }
 
 static bool
@@ -93,7 +98,7 @@ init_texture (void)
 }
 
 static bool
-init (void)
+init (const struct viewport *vp)
 {
 	// Init texture:
 	if (init_texture() == false)
@@ -117,6 +122,7 @@ init (void)
 	// Copy vertices to buffer:
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertex), vertex, GL_STATIC_DRAW);
 
+	resize(vp);
 	return true;
 }
 

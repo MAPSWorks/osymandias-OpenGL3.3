@@ -5,8 +5,6 @@
 #include <GL/gl.h>
 
 #include "../bitmap_cache.h"
-#include "../worlds.h"
-#include "../viewport.h"
 #include "../texture_cache.h"
 #include "../tiledrawer.h"
 #include "../tilepicker.h"
@@ -15,8 +13,10 @@
 #include "../programs.h"
 
 static bool
-init (void)
+init (const struct viewport *vp)
 {
+	(void) vp;
+
 	if (bitmap_cache_create())
 		return texture_cache_create();
 
@@ -31,47 +31,44 @@ destroy (void)
 	bitmap_cache_destroy();
 }
 
-static uint32_t
+static const struct texture_cache *
 find_texture (const struct cache_node *in, struct cache_node *out)
 {
-	uint32_t id;
-	void *rawbits;
-	struct cache_node out_tex, out_bmp;
+	const struct bitmap_cache  *bitmap;
+	const struct texture_cache *tex;
+	struct cache_node out_bitmap, out_tex;
 
 	// Return true if the exact requested texture was found:
-	if ((id = texture_cache_search(in, &out_tex)) > 0)
+	if ((tex = texture_cache_search(in, &out_tex)) != NULL)
 		if (in->zoom == out_tex.zoom) {
 			*out = out_tex;
-			return id;
+			return tex;
 		}
 
 	// Otherwise try to find a bitmap of higher zoom:
 	bitmap_cache_lock();
-	if ((rawbits = bitmap_cache_search(in, &out_bmp)) != NULL) {
-		if (id == 0 || out_bmp.zoom > out_tex.zoom) {
-			id = texture_cache_insert(&out_bmp, rawbits);
+	if ((bitmap = bitmap_cache_search(in, &out_bitmap)) != NULL) {
+		if (tex == NULL || out_bitmap.zoom > out_tex.zoom) {
+			tex = texture_cache_insert(&out_bitmap, bitmap);
 			bitmap_cache_unlock();
-			*out = out_bmp;
-			return id;
+			*out = out_bitmap;
+			return tex;
 		}
 	}
 	bitmap_cache_unlock();
 
 	// Else use whatever texture we have:
 	*out = out_tex;
-	return id;
+	return tex;
 }
 
 static void
-paint (void)
+paint (const struct camera *cam, const struct viewport *vp)
 {
-	int world_zoom = world_get_zoom();
-
-	// Draw to world coordinates:
-	viewport_gl_setup_world();
+	glDisable(GL_BLEND);
 
 	// Load tiledrawer programs:
-	tiledrawer_start();
+	tiledrawer_start(cam, vp);
 
 	for (const struct tilepicker *tile = tilepicker_first(); tile; tile = tilepicker_next()) {
 
@@ -83,16 +80,11 @@ paint (void)
 			.y    = tile->y,
 			.zoom = tile->zoom,
 		};
-		uint32_t id;
 
-		if ((id = find_texture(&in, &out)) == 0)
-			continue;
-
-		tiledrawer(&((struct tiledrawer) {
+		tiledrawer(&(struct tiledrawer) {
 			.tile = &out,
-			.world_zoom = world_zoom,
-			.texture_id = id,
-		}));
+			.tex  = find_texture(&in, &out),
+		});
 	}
 
 	program_none();

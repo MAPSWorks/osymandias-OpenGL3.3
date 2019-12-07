@@ -1,21 +1,24 @@
 #include "../camera.h"
+#include "../pan.h"
 #include "../util.h"
 #include "../viewport.h"
-#include "../worlds.h"
+#include "../zoom.h"
 #include "framerate.h"
 #include "signal.h"
 
-static int button_dragged = false;
+#define BUTTON_LEFT	1
+#define BUTTON_CENTER	2
+#define BUTTON_RIGHT	3
+
 static int button_pressed = false;
-static struct screen_pos button_pressed_pos;
+static struct viewport_pos button_pressed_pos;
 static int button_num;
-static int click_halted_autoscroll = 0;
 
 // Translate event coordinates to have origin in bottom left:
 // Use a macro and not an inline function because the basic GdkEvent
 // does not have x and y members:
 #define event_get_pos							\
-	struct screen_pos pos;						\
+	struct viewport_pos pos;					\
 	do {								\
 		GtkAllocation allocation;				\
 									\
@@ -32,17 +35,12 @@ on_button_press (GtkWidget *widget, GdkEventButton *event)
 {
 	event_get_pos;
 
-	button_dragged = false;
 	button_pressed = true;
 	button_pressed_pos = pos;
 	button_num = event->button;
 
-	if (button_num == 1)
-		viewport_hold_start(&pos);
-
-	// Does the press of this button cause the autoscroll to halt?
-	click_halted_autoscroll = world_autoscroll_stop();
-	world_autoscroll_measure_down(evtime);
+	if (button_num == BUTTON_LEFT)
+		pan_on_button_down(&pos, evtime);
 
 	// Don't propagate further:
 	return TRUE;
@@ -53,26 +51,32 @@ on_button_motion (GtkWidget *widget, GdkEventButton *event)
 {
 	event_get_pos;
 
-	int dx = pos.x - button_pressed_pos.x;
-	int dy = pos.y - button_pressed_pos.y;
+	if (button_num == BUTTON_LEFT)
+		if (pan_on_button_move(&pos, evtime))
+			framerate_repaint();
 
-	button_dragged = true;
-
-	// Left mouse button:
-	if (button_num == 1) {
-		world_autoscroll_measure_hold(evtime);
-		viewport_hold_move(&pos);
-	}
-	// Right mouse button:
-	if (button_num == 3) {
+	if (button_num == BUTTON_RIGHT) {
+		const int dx = pos.x - button_pressed_pos.x;
+		const int dy = pos.y - button_pressed_pos.y;
 
 		if (dx != 0)
-			camera_rotate(dx * -0.005f);
+			camera_set_rotate(dx * -0.005);
 
 		if (dy != 0)
-			camera_tilt(dy * 0.005f);
+			camera_set_tilt(dy * 0.005);
+
+		framerate_repaint();
 	}
-	framerate_repaint();
+
+	if (button_num == BUTTON_CENTER) {
+		const int dy = pos.y - button_pressed_pos.y;
+
+		if (dy != 0) {
+			camera_set_view_angle(camera_get()->view_angle + dy * -0.005);
+			framerate_repaint();
+		}
+	}
+
 	button_pressed_pos = pos;
 
 	// Don't propagate further:
@@ -86,22 +90,10 @@ on_button_release (GtkWidget *widget, GdkEventButton *event)
 		return TRUE;
 
 	button_pressed = false;
-
-	// We have just released a drag; kickoff the autoscroller:
-	if (button_dragged) {
-		world_autoscroll_measure_free(evtime);
-		return TRUE;
-	}
-
-	// We have a click, not a drag:
-	if (click_halted_autoscroll)
-		return TRUE;
-
-	// Only recenter the viewport if this is the kind
-	// of button press that did not halt the autoscroll:
 	event_get_pos;
-	viewport_center_at(&pos);
-	framerate_repaint();
+
+	if (event->button == BUTTON_LEFT)
+		pan_on_button_up(&pos, evtime);
 
 	// Don't propagate further:
 	return TRUE;
@@ -110,23 +102,13 @@ on_button_release (GtkWidget *widget, GdkEventButton *event)
 static gboolean
 on_scroll (GtkWidget* widget, GdkEventScroll *event)
 {
-	switch (event->direction)
-	{
-	case GDK_SCROLL_UP: {
-		event_get_pos;
-		viewport_zoom_in(&pos);
-		framerate_repaint();
-		break;
-	}
-	case GDK_SCROLL_DOWN: {
-		event_get_pos;
-		viewport_zoom_out(&pos);
-		framerate_repaint();
-		break;
-	}
-	default:
-		break;
-	}
+	(void) widget;
+
+	if (event->direction == GDK_SCROLL_UP)
+		zoom_in(evtime);
+
+	if (event->direction == GDK_SCROLL_DOWN)
+		zoom_out(evtime);
 
 	// Don't propagate further:
 	return TRUE;

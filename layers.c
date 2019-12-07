@@ -12,27 +12,19 @@ static const struct layer *list_end   = (const void *) &layers_list_end;
 	for (const struct layer *layer = list_start; layer < list_end; layer++)
 
 void
-layers_paint (void)
+layers_paint (const struct camera *cam, const struct viewport *vp)
 {
 	FOREACH_LAYER
 		if (layer->paint)
-			layer->paint();
+			layer->paint(cam, vp);
 }
 
 void
-layers_zoom (const unsigned int zoom)
-{
-	FOREACH_LAYER
-		if (layer->zoom)
-			layer->zoom(zoom);
-}
-
-void
-layers_resize (const unsigned int width, const unsigned int height)
+layers_resize (const struct viewport *vp)
 {
 	FOREACH_LAYER
 		if (layer->resize)
-			layer->resize(width, height);
+			layer->resize(vp);
 }
 
 void
@@ -44,10 +36,10 @@ layers_destroy (void)
 }
 
 bool
-layers_init (void)
+layers_init (const struct viewport *vp)
 {
 	FOREACH_LAYER
-		if (layer->init && layer->init() == false) {
+		if (layer->init && layer->init(vp) == false) {
 			layers_destroy();
 			return false;
 		}

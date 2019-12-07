@@ -1,97 +1,53 @@
-#include <math.h>
-
-#include "camera.h"
-#include "glutil.h"
 #include "tiledrawer.h"
 #include "programs.h"
-#include "programs/planar.h"
 #include "programs/spherical.h"
-#include "worlds.h"
+
+// Array of indices. If we have a quad defined by these corners:
+//
+//   3--2
+//   |  |
+//   0--1
+//
+// we define two counterclockwise triangles, 0-2-3 and 0-1-2:
+static const uint8_t vertex_index[] = {
+	0, 2, 3,
+	0, 1, 2,
+};
+
+static struct {
+	uint32_t vao;
+} state;
 
 void
 tiledrawer (const struct tiledrawer *td)
 {
-	const struct cache_node *tile = td->tile;
-
-	// Texture coordinates:
-	struct glutil_vertex_uv texuv[4] = {
-		{ .u = 0.0f, 0.0f },
-		{ .u = 1.0f, 0.0f },
-		{ .u = 1.0f, 1.0f },
-		{ .u = 0.0f, 1.0f },
-	};
-
-	// Vertex coordinates, translating tile coordinate order to OpenGL
-	// coordinate order:
-	//
-	//  OpenGL   Tile
-	//
-	//   3--2    0,0----wd,0
-	//   |  |     |      |
-	//   0--1    0,ht--wd,ht
-	//
-	texuv[0].x = texuv[3].x = tile->x;
-	texuv[1].x = texuv[2].x = tile->x + 1;
-	texuv[0].y = texuv[1].y = tile->y;
-	texuv[3].y = texuv[2].y = tile->y + 1;
+	if (td->tex == NULL)
+		return;
 
 	// Set tile zoom level:
-	if (world_get() == WORLD_PLANAR)
-		program_planar_set_tile_zoom(tile->zoom);
-	else
-		program_spherical_set_tile(tile);
-
-	glActiveTexture(GL_TEXTURE0);
-	glEnable(GL_TEXTURE_2D);
+	program_spherical_set_tile(td->tile, &td->tex->coords);
 
 	// Bind texture:
-	glBindTexture(GL_TEXTURE_2D, td->texture_id);
+	glBindTexture(GL_TEXTURE_2D, td->tex->id);
 
-	// Copy vertices to buffer:
-	glBufferData(GL_ARRAY_BUFFER, sizeof (texuv), texuv, GL_STATIC_DRAW);
-
-	// Draw all triangles in the buffer:
-	glutil_draw_quad();
+	// Draw two triangles which together form one quad:
+	glDrawElements(GL_TRIANGLES, sizeof (vertex_index), GL_UNSIGNED_BYTE, vertex_index);
 }
 
 void
-tiledrawer_start (void)
+tiledrawer_start (const struct camera *cam, const struct viewport *vp)
 {
-	static GLuint vao;
 	static bool init = false;
 
 	// Lazy init:
 	if (init == false) {
-		glGenVertexArrays(1, &vao);
+		glGenVertexArrays(1, &state.vao);
 		init = true;
 	}
 
-	glBindVertexArray(vao);
+	glBindVertexArray(state.vao);
+	program_spherical_use(cam, vp);
 
-	if (world_get() == WORLD_PLANAR) {
-		glutil_vertex_uv_link(
-			program_planar_loc(LOC_PLANAR_VERTEX),
-			program_planar_loc(LOC_PLANAR_TEXTURE));
-
-		program_planar_use(&((struct program_planar) {
-			.mat_viewproj = camera_mat_viewproj(),
-			.mat_model    = world_get_matrix(),
-			.tile_zoom    = 0,
-			.world_zoom   = world_get_zoom(),
-		}));
-	}
-	else {
-		glutil_vertex_uv_link(
-			program_spherical_loc(LOC_SPHERICAL_VERTEX),
-			program_spherical_loc(LOC_SPHERICAL_TEXTURE));
-
-		program_spherical_loc(LOC_SPHERICAL_VERTEX),
-		program_spherical_loc(LOC_SPHERICAL_TEXTURE);
-
-		program_spherical_use(&((struct program_spherical) {
-			.mat_viewproj = camera_mat_viewproj(),
-			.mat_model    = world_get_matrix(),
-			.tile_zoom    = 0,
-		}));
-	}
+	glActiveTexture(GL_TEXTURE0);
+	glEnable(GL_TEXTURE_2D);
 }

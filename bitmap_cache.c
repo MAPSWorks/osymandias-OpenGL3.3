@@ -4,6 +4,7 @@
 
 #include "gui/framerate.h"
 #include "bitmap_cache.h"
+#include "globe.h"
 #include "threadpool.h"
 #include "pngloader.h"
 
@@ -15,26 +16,40 @@ static struct cache      *cache = NULL;
 static struct threadpool *tpool = NULL;
 static pthread_mutex_t    mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static void
-process (void *data)
+void
+bitmap_cache_insert (const struct cache_node *loc, void *rgb)
 {
-	void *rawbits;
-	struct cache_node *req = data;
+	struct bitmap_cache bitmap = { .rgb = rgb };
 
-	if ((rawbits = pngloader_main(req)) == NULL)
-		return;
+	// Calculate 3D sphere xyz coordinates for this tile:
+	globe_map_tile(loc, &bitmap.coords);
 
+	// Insert the cache data structure into the bitmap cache:
 	pthread_mutex_lock(&mutex);
-	cache_insert(cache, req, &((union cache_data) { .ptr = rawbits }));
+	cache_insert(cache, loc, &bitmap);
 	pthread_mutex_unlock(&mutex);
 
+	// Ask for a redraw of the viewport:
 	framerate_repaint();
 }
 
 static void
-destroy (union cache_data *data)
+process (void *data)
 {
-	free(data->ptr);
+	void *rgb;
+	struct cache_node *req = data;
+
+	// Store rawbits data pointer into cache data structure if found:
+	if ((rgb = pngloader_main(req)) != NULL)
+		bitmap_cache_insert(req, rgb);
+}
+
+static void
+on_destroy (void *data)
+{
+	struct bitmap_cache *bitmap = data;
+
+	free(bitmap->rgb);
 }
 
 static void
@@ -48,38 +63,46 @@ procure (const struct cache_node *loc)
 	// there is already a lookup in progress for this node. The node will
 	// be overwritten by the thread when it is done. Until then, it acts as
 	// a "tombstone", preventing multiple requeues of the same job:
-	cache_insert(cache, loc, &((union cache_data) { .ptr = NULL }));
+	cache_insert(cache, loc, &(struct bitmap_cache) { .rgb = NULL });
 }
 
-void *
+const struct bitmap_cache *
 bitmap_cache_search (const struct cache_node *in, struct cache_node *out)
 {
-	union cache_data *data = cache_search(cache, in, out);
+	bool procuring = false;
+	struct cache_node level = *in;
+	const struct bitmap_cache *data;
 
-	// Return successfully if valid data was found at the requested level:
-	if (data != NULL && data->ptr != NULL && in->zoom == out->zoom)
-		return data->ptr;
+	while (true) {
+
+		// Search for valid data at the current level. If there is no
+		// data at all, the cache is empty from here on down:
+		if ((data = cache_search(cache, &level, out)) == NULL)
+			break;
+
+		// If we got back non-NULL pixels, it is a valid bitmap:
+		if (data->rgb != NULL)
+			break;
+
+		// We got back a valid data pointer but with NULL pixels. This
+		// indicates that the tile we landed on is currently being
+		// procured. Check if the procurement is for the tile we want:
+		if (in->zoom == out->zoom)
+			procuring = true;
+
+		// Move up one zoom layer and retry:
+		if (cache_node_up(&level) == false) {
+			data = NULL;
+			break;
+		}
+	}
 
 	// If no node was found or it is at a different zoom level than
 	// requested, then start a threadpool job to procure the target:
-	if (data == NULL || in->zoom != out->zoom)
+	if (procuring == false && (data == NULL || in->zoom != out->zoom))
 		procure(in);
 
-	// If we got no data back at all, the cache is empty:
-	if (data == NULL)
-		return NULL;
-
-	// If we got back some non-NULL data, it is a valid bitmap at some
-	// lower zoom level. Better than nothing:
-	if (data->ptr != NULL)
-		return data->ptr;
-
-	// We got back a valid data pointer but with a NULL member. This
-	// indicates that we landed on a tile that is currently being procured.
-	// Move up one zoom layer and retry:
-	struct cache_node up = *out;
-
-	return cache_node_up(&up) ? bitmap_cache_search(&up, out) : NULL;
+	return data;
 }
 
 void
@@ -105,8 +128,9 @@ bool
 bitmap_cache_create (void)
 {
 	const struct cache_config cache_config = {
-		.capacity = CACHE_SIZE,
-		.destroy  = destroy,
+		.capacity  = CACHE_SIZE,
+		.destroy   = on_destroy,
+		.entrysize = sizeof (struct bitmap_cache),
 	};
 
 	const struct threadpool_config threadpool_config = {

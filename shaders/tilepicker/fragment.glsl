@@ -1,7 +1,10 @@
 #version 130
 
-noperspective in vec3 p1;
-noperspective in vec3 p2;
+uniform vec3 cam;
+
+noperspective in vec3 p;
+smooth        in float frag_look_angle;
+flat          in float frag_arc_angle;
 
 out uvec4 fragcolor;
 
@@ -54,45 +57,51 @@ int zoomlevel (float dist, float lat)
 	// strength of the attenuation as latitude increases:
 	float latdilute = 1.0 - abs(lat) / 12.0;
 
-	// Get zoomlevel based on the distance to the camera. The zoom level is
-	// inversely proportional to the square of the distance. The smaller
-	// the distance, the greater the zoom level. Take the exponent of the
-	// distance and flip the sign. Subtract from a constant to tune for the
-	// camera view angle and distance at zoom level zero:
-	int zoom = int((5 - log2(dist)) * latdilute);
+	// Calculate the parallel (facing the camera) "ground length" swept by
+	// one window pixel at the given distance. This is a measure of the
+	// level of world detail that the pixel should display. This metric
+	// takes into account the camera's distance (for basic zoom level), the
+	// viewport width, and the viewing angle (for level of detail):
+	float dx = dist * tan(frag_arc_angle) / cos(frag_look_angle);
+
+	// Get zoomlevel based on the distance to the camera and the size of a
+	// tile pixel under the current viewing angle. The zoom level is
+	// inversely proportional to the square of the distance, and has a
+	// logarithmic relationship to tile zoom levels. A fudge constant is
+	// added to balance the level of detail against tile dimensions:
+	int zoom = int((-log2(dx) - 4.5) * latdilute);
 
 	return clamp(zoom, zoom_min, zoom_max);
 }
 
-bool sphere_intersect (in vec3 start, in vec3 dir, out vec3 hit)
+bool sphere_intersect (in vec3 nray, out vec3 hit)
 {
-	// Find the intersection of a ray with the given start point and
-	// direction with a unit sphere centered on the origin. Theory here:
-	//
+	// Find the intersection of a normalized ray starting at the camera,
+	// with a unit sphere centered on the origin. Theory:
 	//   https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection
-	//
-	// Distance of ray origin to world origin:
-	float startdist = length(start);
 
-	// Dot product of start position with direction:
-	float raydot = dot(start, dir);
+	// Squared distance of the camera to the world origin:
+	float camdist = dot(cam, cam);
 
-	// Calculate the value under the square root:
-	float det = (raydot * raydot) - (startdist * startdist) + 1.0;
+	// Dot product of the camera (ray start) position with the ray:
+	float raydot = dot(cam, nray);
+
+	// Calculate the determinant under the square root:
+	float det = raydot * raydot - camdist + 1.0;
 
 	// If this value is negative, no intersection exists:
 	if (det < 0.0)
 		return false;
 
-	// Get the time value to intersection point:
-	float t = sqrt(det) - raydot;
+	// Get the time value to the intersection point:
+	float t = sqrt(det) + raydot;
 
 	// If the intersection is behind us, discard:
 	if (t >= 0.0)
 		return false;
 
-	// Get the intersection point:
-	hit = start + t * dir;
+	// Get the intersection point in world coordinates:
+	hit = cam - t * nray;
 	return true;
 }
 
@@ -101,14 +110,14 @@ void main (void)
 	vec3 hit;
 	vec2 tile;
 
-	// Cast a ray from p1 and p2 and intersect it with the unit sphere:
-	if (sphere_intersect(p1, normalize(p1 - p2), hit) == false) {
+	// Intersect the ray p from the camera with the unit sphere:
+	if (sphere_intersect(normalize(p), hit) == false) {
 		fragcolor = uvec4(0);
 		return;
 	}
 
 	// Get zoomlevel based on distance to camera:
-	int zoom = zoomlevel(distance(hit, p1), atanh(hit.y));
+	int zoom = zoomlevel(distance(cam, hit), atanh(hit.y));
 
 	if (sphere_to_tile(hit, zoom, tile) == false) {
 		fragcolor = uvec4(0);
