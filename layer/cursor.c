@@ -5,9 +5,9 @@
 #include "../matrix.h"
 #include "../inlinebin.h"
 #include "../glutil.h"
-#include "../layers.h"
-#include "../programs.h"
-#include "../programs/tile2d.h"
+#include "../layer.h"
+#include "../program.h"
+#include "../program/tile2d.h"
 #include "../png.h"
 
 // Array of counterclockwise vertices:
@@ -39,7 +39,7 @@ static struct glutil_texture tex = {
 static GLuint vao, vbo;
 
 static void
-paint (const struct camera *cam, const struct viewport *vp)
+on_paint (const struct camera *cam, const struct viewport *vp)
 {
 	(void) cam;
 	(void) vp;
@@ -68,7 +68,7 @@ paint (const struct camera *cam, const struct viewport *vp)
 }
 
 static void
-resize (const struct viewport *vp)
+on_resize (const struct viewport *vp)
 {
 	screen.width  = vp->width;
 	screen.height = vp->height;
@@ -98,7 +98,7 @@ init_texture (void)
 }
 
 static bool
-init (const struct viewport *vp)
+on_init (const struct viewport *vp)
 {
 	// Init texture:
 	if (init_texture() == false)
@@ -122,12 +122,12 @@ init (const struct viewport *vp)
 	// Copy vertices to buffer:
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertex), vertex, GL_STATIC_DRAW);
 
-	resize(vp);
+	on_resize(vp);
 	return true;
 }
 
 static void
-destroy (void)
+on_destroy (void)
 {
 	// Delete texture:
 	glDeleteTextures(1, &tex.id);
@@ -139,10 +139,14 @@ destroy (void)
 	glDeleteBuffers(1, &vbo);
 }
 
-// Export public methods:
-LAYER(60) = {
-	.init    = &init,
-	.paint   = &paint,
-	.resize  = &resize,
-	.destroy = &destroy,
+static struct layer layer = {
+	.name       = "Cursor",
+	.zdepth     = 60,
+	.visible    = true,
+	.on_init    = &on_init,
+	.on_paint   = &on_paint,
+	.on_resize  = &on_resize,
+	.on_destroy = &on_destroy,
 };
+
+LAYER_REGISTER(&layer)
